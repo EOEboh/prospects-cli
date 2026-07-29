@@ -1,0 +1,128 @@
+# Prospect scoring weights.
+#
+# Copy to ./weights.yaml and tune as you learn what converts. Without a
+# weights.yaml, these defaults are used, so `prospect score` works out of the box.
+#
+# The printed score is normalized to 0-100 against the sum of positive points
+# below, so changing a weight does not silently move what `--min-score 60`
+# selects. The raw sum and that maximum are both stored alongside every score.
+
+version: 1
+
+# A score is flagged low-confidence when less than this fraction of the
+# available points could actually be checked. A business whose ad status has
+# never been recorded is missing 40 of 110 points, giving 0.64 coverage.
+min_confidence: 0.7
+
+# Turning review counts into an employee-size band. Rough by nature: it exists
+# to separate a two-person shop from a national chain, not to be precise.
+# Only used when no size_band signal was recorded by hand.
+size_bands:
+  micro_below: 5      # under 5 reviews: too small or too new to tell
+  smb_below: 150      # the 2-50 employee target
+  mid_below: 1000     # above this, large
+
+rules:
+  # The dominant signal. A business paying for traffic has already decided
+  # leads are worth money, which makes what happens after the click the
+  # expensive part.
+  - id: running_ads
+    label: Currently running ads
+    points: 40
+    when:
+      signal: running_ads
+      equals: "true"
+    explain: is currently running paid ads
+    observation: >-
+      You're running ads at the moment — worth knowing what happens to those
+      enquiries after they land.
+
+  # The core opportunity: a form that drops into an inbox with nothing behind
+  # it. If a CRM or scheduler is already wired up, most of the pitch is gone.
+  #
+  # Enterprise tooling counts as automation too. A form posting to a Salesforce
+  # web-to-lead endpoint is the most automated form there is, and without this
+  # second test it would score as if it went nowhere.
+  - id: unautomated_contact_form
+    label: Contact form with no automation behind it
+    points: 20
+    when:
+      all:
+        - signal: contact_form
+          equals: "true"
+        - signal: automation_tag
+          absent: true
+        - signal: enterprise_marker
+          absent: true
+    explain: has a contact form with no CRM or scheduling tool behind it
+    observation: >-
+      Your contact form posts straight to an inbox — there's no CRM or
+      scheduler picking those up.
+
+  # A written promise of a day or more is a commitment to a manual process,
+  # and it is quotable straight back at them.
+  - id: slow_stated_response
+    label: Stated response time of 24 hours or more
+    points: 15
+    when:
+      signal: response_time_hours
+      at_least: 24
+    explain: promises a response time of 24 hours or more
+    observation: >-
+      Your site promises a reply within the day — that's a commitment worth
+      protecting when volume picks up.
+
+  # Recorded by hand from a job posting. Hiring someone to retype leads is the
+  # clearest possible statement of the problem.
+  - id: hiring_lead_role
+    label: Hiring for a data-entry or lead-management role
+    points: 15
+    when:
+      signal: hiring_lead_role
+      equals: "true"
+    explain: is hiring for a data-entry or lead-management role
+    observation: >-
+      I saw you're hiring for lead handling — some of that is worth automating
+      before it becomes a headcount.
+
+  # Big enough to have inbound worth managing, small enough to have nobody
+  # managing it.
+  - id: target_size
+    label: Size suggests 2-50 employees
+    points: 10
+    when:
+      signal: size_band
+      equals: smb
+    explain: looks like a 2-50 person business, the size this service fits
+
+  # Without a way to reach them, none of the rest is actionable.
+  - id: public_email
+    label: Public contact email found
+    points: 10
+    when:
+      signal: contact_email
+      present: true
+    explain: lists a public contact email
+
+  # Large enough to build it in-house, with a procurement process attached.
+  - id: enterprise
+    label: Enterprise tooling detected
+    points: -25
+    when:
+      signal: enterprise_marker
+      present: true
+    explain: runs enterprise sales or HR tooling, so is likely to build in-house
+
+  # A staffed chat widget means someone is already handling inbound live.
+  # Small penalty: it narrows the pitch rather than killing it.
+  - id: staffed_chat
+    label: Live chat widget present
+    points: -5
+    when:
+      signal: chat_widget
+      equals: "true"
+    explain: runs a live chat widget, so inbound is already being handled somewhere
+
+# The signal whose absence means a prospect has not been fully assessed.
+# `brief` flags these, since the Ad Library web UI is the reliable way to check.
+manual_check_signal: running_ads
