@@ -16,7 +16,7 @@ with `not implemented yet (phase N)`.
 |------:|----------|-------|
 | 1 | Skeleton, config, SQLite + migrations, logging, quota ceilings, `quota` | done |
 | 2 | `seed` — CSV import and dedup | done |
-| 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | pending |
+| 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | done |
 | 4 | `score` — YAML weights and explanations | pending |
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | pending |
 | 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | pending |
@@ -229,18 +229,64 @@ Scores are computable from partial data — a business with only website signals
 still scores, marked low-confidence — and a business whose ad status has never
 been recorded is flagged as needing a manual check.
 
+## What `enrich` reads
+
+Up to three pages per business — the homepage plus up to two contact pages it
+links to. If the homepage links to none, a couple of conventional paths
+(`/contact`, `/contact-us`) are tried, and that is the end of the guessing.
+
+| Signal | How it is read |
+|--------|----------------|
+| `contact_email` | `mailto:` links and page text, filtered against placeholders, `noreply@` and platform noise |
+| `contact_form` | A form taking a message or an email; the resolved action endpoint is stored as evidence. Search boxes and newsletter-only signups do not count |
+| `chat_widget` | Intercom, Drift, Tawk, Crisp, LiveChat, Zendesk, Tidio, Olark, Freshchat, HubSpot, Messenger |
+| `automation_tag` | HubSpot, Calendly, Intercom, Mailchimp, Typeform, ActiveCampaign, Klaviyo, ConvertKit, Jotform, Gravity Forms, Zapier, Acuity, Pipedrive, Zoho |
+| `enterprise_marker` | Salesforce/Pardot, Marketo, Workday, Greenhouse, Lever, Eloqua, Adobe Experience Cloud, SAP |
+| `response_time_hours` | A stated turnaround in the page text, stored with the sentence that said it |
+
+Absence is recorded as explicitly as presence — "no contact form" is a fact,
+and it has to be distinguishable from "never looked".
+
+Signals carry a confidence: **0.7** when only the homepage could be read,
+**0.9** when a contact page confirmed them. Third-party tools are matched on
+specific fingerprints (script hosts, inline globals), not on brand names in
+prose — "we use Mailchimp" in a blog post is not a Mailchimp integration.
+
+### Signal history
+
+Signals are appended **when the value changes**, not on every run. Re-observing
+the same value bumps `last_seen_at`; a different value supersedes the old row
+and inserts a new one.
+
+That is what makes the interesting question answerable. A business that was not
+running ads last month and is running them today has just entered its buying
+window, and `prospect signal` says so out loud when it happens:
+
+```
+$ prospect signal 42 --type running_ads --value true --note "checked ad library"
+Recorded running_ads=true for Acme Recruiting (#42) — this CHANGED from the previous value.
+```
+
 ## Crawling rules
 
 Enforced in code, not left to discipline:
 
-- `robots.txt` is honored on every fetch. A disallowed page is skipped and the
-  reason recorded as a signal, so "not fetched" stays distinguishable from
-  "nothing found".
+- `robots.txt` is honored on every fetch, parsed per RFC 9309 — wildcards,
+  `$` anchors, longest-match precedence and per-agent groups. A disallowed page
+  is skipped and the reason recorded as a `robots_disallowed` signal, so "not
+  fetched" stays distinguishable from "nothing found".
+- A site's `Crawl-delay` is obeyed when it is **slower** than the configured
+  rate. A site asking to be crawled faster does not get its way.
 - The User-Agent names the tool and `PROSPECT_USER_AGENT_EMAIL`, which is
-  required. There is no anonymous fallback.
-- At most one request per second per host, with a timeout on every call and a
-  bounded worker pool (default 5).
-- Contact forms are **detected, never submitted**. Bulk submission is spam.
+  required. There is no anonymous fallback, and commands that fetch refuse to
+  start without it.
+- At most one request per second per host, enforced across the whole worker
+  pool, so two workers on one host still queue behind each other. Every request
+  has a timeout, a 4 MiB body cap and a redirect limit.
+- Retries use exponential backoff with jitter on 429 and 5xx, and honor
+  `Retry-After`. 4xx is an answer, not a failure, and is never retried.
+- Contact forms are **detected, never submitted**. This tool issues `GET` and
+  nothing else. Bulk submission is spam and would get your domain flagged.
 - Only publicly listed business contact details are collected.
 - Suppression is enforced by the database: `list`, `export` and `brief` read a
   view that already filters suppressed businesses, and suppression applies to
