@@ -193,9 +193,14 @@ func PlaceDetailsSKU(fields []string) (SKU, string, error) {
 
 // DefaultTextSearchMask is what `discover` requests.
 //
-// websiteUri already forces the Enterprise tier, and rating with
-// userRatingCount sit in that same tier — so the size heuristic rides along at
-// no additional cost. Dropping them would save nothing.
+// websiteUri already forces the Enterprise tier, and rating, userRatingCount
+// and addressComponents all sit at or below it — so the size heuristic and a
+// structured city ride along at no additional cost. Dropping them would save
+// nothing.
+//
+// addressComponents earns its place: the city scopes the fallback dedup key,
+// and deriving it by splitting formattedAddress on commas breaks as soon as a
+// result is not US-formatted.
 //
 // Deliberately absent: phone numbers and opening hours. Also Enterprise, also
 // free at this point, but unused by scoring, and an unused field is a field
@@ -205,6 +210,7 @@ func DefaultTextSearchMask() []string {
 		"places.id",
 		"places.displayName",
 		"places.formattedAddress",
+		"places.addressComponents",
 		"places.websiteUri",
 		"places.rating",
 		"places.userRatingCount",

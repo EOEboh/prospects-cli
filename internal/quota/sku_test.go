@@ -135,6 +135,9 @@ func TestDefaultTextSearchMask(t *testing.T) {
 	for _, required := range []string{
 		"places.id", "places.displayName", "places.websiteUri",
 		"places.rating", "places.userRatingCount",
+		// The city scopes the fallback dedup key, so it must be structured
+		// rather than split out of a formatted address string.
+		"places.addressComponents",
 	} {
 		if !strings.Contains(joined, required) {
 			t.Errorf("default mask is missing %s", required)
