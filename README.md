@@ -15,7 +15,7 @@ with `not implemented yet (phase N)`.
 | Phase | Delivers | State |
 |------:|----------|-------|
 | 1 | Skeleton, config, SQLite + migrations, logging, quota ceilings, `quota` | done |
-| 2 | `seed` — CSV import and dedup | pending |
+| 2 | `seed` — CSV import and dedup | done |
 | 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | pending |
 | 4 | `score` — YAML weights and explanations | pending |
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | pending |
@@ -51,6 +51,7 @@ name,website,city
 Acme Recruiting,https://acmerecruiting.com,Austin
 Bright Path Talent,https://brightpathtalent.com,Austin
 CSV
+./prospect seed --csv businesses.csv --dry-run   # see what it would do
 ./prospect seed --csv businesses.csv
 
 # 2. Fetch their sites and record what they reveal about lead handling.
@@ -62,6 +63,46 @@ CSV
 # 4. Read the morning brief.
 ./prospect brief
 ```
+
+### The CSV format
+
+A header row is required. Column order is irrelevant, unknown columns are
+ignored, and header names match loosely — `Business Name`, `business_name` and
+`name` are the same column. Excel's UTF-8 BOM is stripped.
+
+| Column | Aliases | Notes |
+|--------|---------|-------|
+| `name` | `business name`, `company` | Required. A row with only a website is accepted; the URL stands in. |
+| `website` | `url`, `site`, `homepage` | Optional but strongly recommended — it is the dedup key. |
+| `city` | `town`, `locality` | Scopes the fallback dedup key when `website` is absent. |
+| `email`, `phone`, `address`, `region`, `country` | `state`, `street`, … | Optional. |
+
+One malformed row is reported and skipped; it never fails the import.
+
+### How dedup works
+
+Businesses are matched on **normalized website domain** first, falling back to
+**normalized name plus city**. Both keys are computed in one place and mirrored
+by unique indexes, so the application and the database never disagree.
+
+- `acme.com`, `www.acme.com`, `https://acme.com/contact` and
+  `careers.acme.com` are all one business.
+- `acme.wixsite.com` and `bright.wixsite.com` are **two** businesses. Website
+  builders put every customer on one registrable domain, so the subdomain is
+  the identity — folding these together would silently delete exactly the kind
+  of prospect this tool exists to find.
+- `facebook.com/acme` and `facebook.com/bright` are likewise two businesses:
+  on those platforms the path is the identity, not the host.
+- `Acme Recruiting`, `Acme Recruiting, Inc.` and `The Acme Recruiting Co.` in
+  the same city are one business. The same name in a different city is two —
+  business names are only unique locally.
+
+Re-importing an updated file merges new details in without overwriting
+anything with a blank, and **re-importing an unchanged file is a complete
+no-op** — nothing is written and `updated_at` does not move.
+
+Suppressed domains are never recreated, so a business that asked to be removed
+stays gone even if it is still sitting in your spreadsheet.
 
 ## Daily workflow
 
@@ -217,10 +258,12 @@ cmd/prospect/          entry point
 internal/
   cli/                 one file per command
   config/              env + .env loading, validation
+  dedup/               domain and name normalization — the identity rules
   logging/             slog wiring
   model/               domain types and the signal vocabulary
   quota/               SKU tiers, field-mask cost resolution, monthly ceilings
   store/               SQLite, migrations, repositories
     migrations/        versioned SQL, applied on startup, idempotent
   source/              the Source interface every data source implements
+    csvseed/           the zero-API path
 ```
