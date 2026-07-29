@@ -18,13 +18,14 @@ with `not implemented yet (phase N)`.
 | 2 | `seed` — CSV import and dedup | done |
 | 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | done |
 | 4 | `score` — YAML weights and explanations | done |
-| 5 | `list`, `export`, `status`, `suppress`, `brief` | pending |
+| 5 | `list`, `export`, `status`, `suppress`, `brief` | done |
 | 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | pending |
 | 7 | Meta Ad Library as an optional flag-gated source | pending |
 | 8 | Tests, docs, example weights config | pending |
 
-After phase 5 the tool is fully useful with **no API keys and no billing
-enabled anywhere**. Paid sources are an upgrade, not a dependency.
+**The tool is fully useful now**, with no API keys and no billing enabled
+anywhere. Phases 6 and 7 add optional paid discovery; they are an upgrade, not
+a dependency.
 
 ## Build
 
@@ -107,18 +108,105 @@ stays gone even if it is still sitting in your spreadsheet.
 ## Daily workflow
 
 ```sh
-./prospect brief                    # top 10 uncontacted, with reasoning
-                                    # flags who still needs a manual ad check
+./prospect brief                    # the morning read: top 10 uncontacted
+```
 
-# Check the Meta Ad Library web UI for the top few, record what you find:
-./prospect signal 42 --type running_ads --value true --note "checked ad library"
-./prospect score                    # rescore with the new signal
+```
+Morning brief — top 3 uncontacted prospect(s), 2 still need an ad check
+────────────────────────────────────────────────────────────────────────────
 
-./prospect status 42 --set emailed_1 --note "sent form observation angle"
-./prospect suppress 17 --reason "asked to be removed"
+ 1. Acme Recruiting                           77/100
+    hello@acmerecruiting.com  ·  https://acmerecruiting.com
+
+    Why:  Acme Recruiting scores 77/100. It is currently running paid ads
+          (checked ad library), has a contact form with no CRM or scheduling
+          tool behind it (https://acmerecruiting.com/enquiry), promises a
+          response time of 24 hours or more (We respond within 24 hours.),
+          and lists a public contact email.
+
+    Open: You're running ads at the moment — worth knowing what happens to
+          those enquiries after they land.
+────────────────────────────────────────────────────────────────────────────
+
+ 2. Cedar Staffing                            41/100
+    info@cedarstaffing.com  ·  https://cedarstaffing.com
+
+    Why:  ... Confidence is low (41% of available signals checked), so treat
+          this as provisional.
+
+    Open: Your contact form posts straight to an inbox — there's no CRM or
+          scheduler picking those up.
+
+    ! Ad check pending — the strongest signal is still unknown.
+      prospect signal 3 --type running_ads --value true|false
+```
+
+The **Open:** line is the suggested first sentence of the cold email, drawn
+from whichever signal contributed most. It is read from `weights.yaml` at print
+time, so rewording it takes effect immediately without rescoring.
+
+The rest of the loop:
+
+```sh
+# Check the flagged prospects at the Ad Library, record what you find:
+./prospect signal 3 --type running_ads --value true --note "checked ad library"
+./prospect score                    # rescore; 41 → 77 if they are advertising
+
+./prospect status 1 --set emailed_1 --note "sent form observation angle"
+./prospect status 1                 # current status plus the full history
+./prospect list --min-score 60 --status not_contacted
+./prospect export --format csv --min-score 60 --out prospects.csv
+./prospect suppress 2 --reason "asked to be removed"
 ```
 
 `prospect signal --help` lists the full signal vocabulary.
+
+### Outreach tracking
+
+Statuses run `not_contacted → emailed_1 → emailed_2 → emailed_3 → replied →
+call_booked → won`, with `dead` available at any point. Transitions are
+appended to a history table rather than overwriting, so "emailed twice, no
+reply" stays distinguishable from "emailed once last week":
+
+```
+$ prospect status 1
+Acme Recruiting (#1)
+  status: replied
+  note:   asked for pricing
+  email:  hello@acmerecruiting.com
+
+History:
+  2026-07-29 18:29  not_contacted → emailed_1  sent form observation angle
+  2026-07-29 18:29  emailed_1 → emailed_2      followed up
+  2026-07-29 18:29  emailed_2 → replied        asked for pricing
+```
+
+### Suppression is permanent
+
+`prospect suppress` excludes a business from every list, export, brief and
+enrichment — and suppresses its **domain**, so re-importing the same CSV or
+re-running `discover` will not recreate it:
+
+```
+$ prospect suppress 2 --reason "asked to be removed"
+Suppressed Globex Corp (#2): asked to be removed
+The domain globex.com is suppressed too, so it will not be recreated.
+
+$ prospect seed --csv businesses.csv
+  0 new
+  1 skipped (suppressed)
+```
+
+Moving a suppressed business back into the pipeline is refused. Its outreach
+entry is closed with the reason, so the history explains why it stopped rather
+than showing it simply going quiet.
+
+### Export
+
+Both formats carry the explanation and the component breakdown, so the
+reasoning travels with the data — a row pasted into a spreadsheet still says
+why it is there. CSV flattens the breakdown into a `top_signals` column; JSON
+keeps it structured.
 
 ## Optional API keys
 
