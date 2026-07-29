@@ -19,7 +19,7 @@ with `not implemented yet (phase N)`.
 | 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | done |
 | 4 | `score` — YAML weights and explanations | done |
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | done |
-| 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | pending |
+| 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | done |
 | 7 | Meta Ad Library as an optional flag-gated source | pending |
 | 8 | Tests, docs, example weights config | pending |
 
@@ -269,13 +269,63 @@ Other cost discipline:
 
 - Responses are cached for 7 days by default. Reruns do not re-fetch, and cache
   hits are recorded as non-billable so `prospect quota` shows what the cache
-  saved.
-- `--dry-run` reports the worst-case billable call count without making any
-  calls. Worst case, not exact: paged APIs only reveal how many pages exist by
-  being called.
+  saved. The ceiling is checked *after* the cache lookup, so a cached page is
+  neither counted nor refused.
 - Unrecognized field names resolve to the Enterprise tier rather than
   optimistically cheap, so a future Google field cannot quietly slip past the
   ceiling.
+- Paging stops as soon as `--limit` is met, and never exceeds 3 pages.
+- An error response is never cached — one transient failure would otherwise
+  become a week of them.
+
+#### Check the cost before you spend it
+
+`--dry-run` reports what a run would cost and where the ceiling currently sits,
+without making a call:
+
+```
+$ prospect discover --niche "recruiting agency" --location "Austin, TX" --limit 50 --dry-run
+
+Dry run: "recruiting agency in Austin, TX"
+
+  billed as     text_search_enterprise (enterprise tier)
+  tier set by   places.websiteUri
+  worst case    3 billable call(s) for up to 50 result(s)
+  used in 2026-07  0 of 900
+  remaining     900
+
+This fits inside the ceiling.
+```
+
+Worst case, not exact: a paged API only reveals how many pages exist by being
+called, cached pages cost nothing, and a query with few results stops early.
+
+When the allowance is gone, the run stops **before** the call rather than after:
+
+```
+$ prospect discover --niche "recruiting agency" --location "Austin, TX"
+prospect: google_places/text_search_enterprise: 900 of 900 calls used in 2026-07
+— stopping to stay inside the free tier (raise PROSPECT_PLACES_MONTHLY_MAX and
+set PROSPECT_ALLOW_PAID_APIS=true to go past it)
+```
+
+#### Where discovery fits
+
+`discover` creates business rows; it does not gather signals. The full paid path
+is:
+
+```sh
+./prospect discover --niche "recruiting agency" --location "Austin, TX" --limit 50 --dry-run
+./prospect discover --niche "recruiting agency" --location "Austin, TX" --limit 50
+./prospect enrich --all-pending     # free: reads their own websites
+./prospect score
+./prospect brief
+```
+
+Discovered businesses are deduplicated against everything already stored on the
+same domain and name keys as CSV imports, so running `discover` over a niche you
+have already seeded adds only what is new. Suppressed domains are never
+recreated.
 
 ### Meta Ad Library — optional, off by default
 
@@ -450,4 +500,6 @@ internal/
     migrations/        versioned SQL, applied on startup, idempotent
   source/              the Source interface every data source implements
     csvseed/           the zero-API path
+    website/           signal extraction from a business's own pages
+    places/            optional paid discovery, behind the quota ceiling
 ```
