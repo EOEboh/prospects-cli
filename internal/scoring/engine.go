@@ -166,19 +166,32 @@ func (c *Config) uncheckedSignals(signals *signalSet) []string {
 // observation picks the opening line for a cold email: the highest-scoring
 // matched rule that offers one.
 func (c *Config) observation(res Result) string {
+	return c.ObservationFor(res.Components)
+}
+
+// ObservationFor derives an opening line from a stored breakdown.
+//
+// It is recomputed rather than persisted so that rewording an observation in
+// weights.yaml takes effect immediately, without rescoring everything. A
+// penalty never supplies the opener: "you run enterprise software" is not how
+// a sales email starts.
+func (c *Config) ObservationFor(components []model.Component) string {
 	byID := make(map[string]Rule, len(c.Rules))
 	for _, r := range c.Rules {
 		byID[r.ID] = r
 	}
-	for _, comp := range res.Components {
-		if comp.Points <= 0 {
+
+	best := ""
+	bestPoints := 0
+	for _, comp := range components {
+		if comp.Points <= bestPoints {
 			continue
 		}
 		if rule, ok := byID[comp.Rule]; ok && rule.Observation != "" {
-			return strings.TrimSpace(rule.Observation)
+			best, bestPoints = strings.TrimSpace(rule.Observation), comp.Points
 		}
 	}
-	return ""
+	return best
 }
 
 // signalSet indexes a business's current signals by type.
