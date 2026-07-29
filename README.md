@@ -17,7 +17,7 @@ with `not implemented yet (phase N)`.
 | 1 | Skeleton, config, SQLite + migrations, logging, quota ceilings, `quota` | done |
 | 2 | `seed` — CSV import and dedup | done |
 | 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | done |
-| 4 | `score` — YAML weights and explanations | pending |
+| 4 | `score` — YAML weights and explanations | done |
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | pending |
 | 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | pending |
 | 7 | Meta Ad Library as an optional flag-gated source | pending |
@@ -207,27 +207,75 @@ still applies to keep a runaway loop from earning a throttle.
 
 ## Scoring
 
-Weights live in `weights.yaml` (see `weights.example.yaml`, phase 4), not in
-constants, so they can be tuned as you learn what converts. Starting weights:
+Weights live in YAML, not in constants, so they can be tuned as you learn what
+converts. Without a `weights.yaml` the built-in defaults apply, so `score`
+works out of the box:
 
-| Signal | Points |
-|--------|-------:|
+```sh
+./prospect score --print-config > weights.yaml   # start from the defaults
+./prospect score --explain                       # see every contribution
+```
+
+| Rule | Points |
+|------|-------:|
 | Currently running ads | 40 |
-| Contact form present, no automation tags detected | 20 |
+| Contact form with no automation behind it | 20 |
 | Stated response time of 24 hours or more | 15 |
 | Hiring for a data-entry or lead-management role | 15 |
-| Size indicators suggesting 2–50 employees | 10 |
+| Size suggests 2–50 employees | 10 |
 | Public contact email found | 10 |
-| Enterprise indicators (Salesforce, large-company markers) | −25 |
+| Enterprise tooling detected | −25 |
+| Live chat widget present | −5 |
 
-The printed score is **normalized to 0–100** against the sum of positive
-weights in the active config. The raw weighted sum and that maximum are stored
-alongside it, so retuning weights does not silently change what
-`--min-score 60` selects.
+Some of these are conditions, not plain weights — "a contact form with nothing
+behind it" is the whole point, and a form posting to a Salesforce web-to-lead
+endpoint is the most automated form there is. So rules are small declarative
+conditions rather than a flat weight map:
 
-Scores are computable from partial data — a business with only website signals
-still scores, marked low-confidence — and a business whose ad status has never
-been recorded is flagged as needing a manual check.
+```yaml
+- id: unautomated_contact_form
+  points: 20
+  when:
+    all:
+      - {signal: contact_form, equals: "true"}
+      - {signal: automation_tag, absent: true}
+      - {signal: enterprise_marker, absent: true}
+  explain: has a contact form with no CRM or scheduling tool behind it
+```
+
+Conditions support `equals`, `one_of`, `at_least`, `at_most`, `present`,
+`absent`, and `all`/`any`/`not`. Signal names are validated at load, so a typo
+in `weights.yaml` fails immediately instead of silently never matching.
+
+### The score is normalized
+
+The printed score is **0–100**, computed against the sum of positive weights in
+the active config. The raw sum, that maximum, and a hash of the config are all
+stored with every score. Doubling every weight leaves the printed score
+unchanged — so `--min-score 60` keeps meaning the same thing after a retune,
+and scores from before and after stay distinguishable.
+
+### Partial data still scores
+
+A rule that cannot be evaluated contributes nothing and **lowers confidence**
+rather than blocking the score. Confidence is coverage: the share of available
+points that could actually be checked. A business whose ad status has never
+been recorded is missing 40 of 110 points, so it caps out around 64%.
+
+The explanation says so out loud rather than presenting a guess as a fact:
+
+```
+Acme Recruiting scores 41/100. It has a contact form with no CRM or scheduling
+tool behind it (http://acmerecruiting.com/enquiry), promises a response time of
+24 hours or more (We respond within 24 hours.), and lists a public contact
+email (hello@acmerecruiting.com). Not yet checked: whether they are hiring for
+lead handling, whether they run ads and company size. Confidence is low (41% of
+available signals checked), so treat this as provisional.
+```
+
+Record the ad signal and the same business rescores at 77 with the flag
+cleared. That gap between 41 and 77 is exactly why `brief` tells you who still
+needs a manual ad check.
 
 ## What `enrich` reads
 
@@ -306,8 +354,10 @@ internal/
   config/              env + .env loading, validation
   dedup/               domain and name normalization — the identity rules
   logging/             slog wiring
+  httpx/               the only network client: robots, cache, rate limit
   model/               domain types and the signal vocabulary
   quota/               SKU tiers, field-mask cost resolution, monthly ceilings
+  scoring/             rules, weights, confidence, explanations
   store/               SQLite, migrations, repositories
     migrations/        versioned SQL, applied on startup, idempotent
   source/              the Source interface every data source implements
