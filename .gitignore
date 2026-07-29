@@ -1,0 +1,17 @@
+# secrets — never commit
+.env
+
+# databases (prospect.db, prospect.db-wal, prospect.db-shm, cache.db, ...)
+*.db
+*.db-wal
+*.db-shm
+
+# tuned weights are operator-specific; weights.example.yaml is committed
+weights.yaml
+
+# build output
+/prospect
+
+# exports
+*.csv
+!testdata/*.csv
