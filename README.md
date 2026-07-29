@@ -1,0 +1,226 @@
+# prospect
+
+A CLI that turns "recruiting agencies in Austin" into a scored, deduplicated,
+resumable list of prospects with contact details and the reasoning behind each
+score.
+
+The score breakdown is the point. A score of 85 with no explanation can't open
+a cold email; every score here carries the plain-English reason it landed
+where it did.
+
+**Status: phase 1 of 8.** The command surface, configuration, schema and
+migrations are in place. Command bodies land phase by phase and currently exit
+with `not implemented yet (phase N)`.
+
+| Phase | Delivers | State |
+|------:|----------|-------|
+| 1 | Skeleton, config, SQLite + migrations, logging, quota ceilings, `quota` | done |
+| 2 | `seed` — CSV import and dedup | pending |
+| 3 | `enrich` — fetch, robots.txt, extraction, cache, rate limit; `signal` | pending |
+| 4 | `score` — YAML weights and explanations | pending |
+| 5 | `list`, `export`, `status`, `suppress`, `brief` | pending |
+| 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | pending |
+| 7 | Meta Ad Library as an optional flag-gated source | pending |
+| 8 | Tests, docs, example weights config | pending |
+
+After phase 5 the tool is fully useful with **no API keys and no billing
+enabled anywhere**. Paid sources are an upgrade, not a dependency.
+
+## Build
+
+Requires Go 1.25 or newer (`modernc.org/sqlite` sets the floor). CGo-free, so
+the binary deploys to a fresh VPS with no system SQLite.
+
+```sh
+git clone <this repo> && cd prospect
+cp .env.example .env      # edit PROSPECT_USER_AGENT_EMAIL
+go build -o prospect ./cmd/prospect
+./prospect --help
+```
+
+The database is created and migrated on first run.
+
+## Zero-key quickstart
+
+No API keys, no billing, no Cloud Console.
+
+```sh
+# 1. Hand it a CSV. Header row required; name is the only mandatory column.
+cat > businesses.csv <<'CSV'
+name,website,city
+Acme Recruiting,https://acmerecruiting.com,Austin
+Bright Path Talent,https://brightpathtalent.com,Austin
+CSV
+./prospect seed --csv businesses.csv
+
+# 2. Fetch their sites and record what they reveal about lead handling.
+./prospect enrich --all-pending
+
+# 3. Score from whatever signals exist. Partial data still scores.
+./prospect score
+
+# 4. Read the morning brief.
+./prospect brief
+```
+
+## Daily workflow
+
+```sh
+./prospect brief                    # top 10 uncontacted, with reasoning
+                                    # flags who still needs a manual ad check
+
+# Check the Meta Ad Library web UI for the top few, record what you find:
+./prospect signal 42 --type running_ads --value true --note "checked ad library"
+./prospect score                    # rescore with the new signal
+
+./prospect status 42 --set emailed_1 --note "sent form observation angle"
+./prospect suppress 17 --reason "asked to be removed"
+```
+
+`prospect signal --help` lists the full signal vocabulary.
+
+## Optional API keys
+
+Everything above works without these.
+
+### Google Places — `discover`
+
+Enables discovery by niche and location instead of hand-built CSVs.
+
+1. Create a project at <https://console.cloud.google.com/>.
+2. Enable the **Places API (New)**.
+3. Create an API key, restrict it to the Places API, and set
+   `GOOGLE_PLACES_API_KEY` in `.env`.
+
+**This tool cannot spend money by default.** `PROSPECT_ALLOW_PAID_APIS` is
+`false`, and while it is false no ceiling may exceed the free monthly
+allowance — a large `PROSPECT_PLACES_MONTHLY_MAX` is clamped, not honored.
+Going past the free tier takes a deliberate edit to that one switch.
+
+#### What "free" actually means here
+
+Google's free allowances are **per SKU per calendar month**, and the SKU is
+decided by the field mask: **billing is at the highest tier among the fields
+requested.**
+
+| Tier | Free calls / SKU / month |
+|------|-------------------------:|
+| Essentials | 10,000 |
+| Pro | 5,000 |
+| Enterprise | 1,000 |
+
+`places.websiteUri` is an **Enterprise** field. It is also this tool's dedup
+key and the page `enrich` fetches, so discovery cannot avoid it — **`discover`
+bills at Text Search Enterprise, with 1,000 free calls per month.** That is the
+number to plan around, not 10,000.
+
+The upside: `rating` and `userRatingCount` are in that same Enterprise tier, so
+the size heuristic rides along at no extra cost. They are always requested.
+
+With the default 0.9 safety margin, the effective ceiling is **900 discover
+calls per month**. At up to 20 results per call, that is roughly 18,000
+businesses a month — far more than a single operator can work through.
+
+#### The three layers, which are not interchangeable
+
+- **In this tool**: the ceiling is checked before every billable call and hard
+  stops the run. `prospect quota` shows where you stand.
+- **In the Cloud Console**: set per-API quotas *below* the free allowance under
+  *APIs & Services → Places API → Quotas*. This is the only layer that stops
+  spend caused by something other than this tool — a leaked key, another
+  machine, a different app on the same project.
+- **Budget alerts are not a limit.** They email you after the fact and do not
+  stop usage. Set one anyway; do not rely on it.
+
+The safety margin exists because the local counter can drift below Google's:
+retried requests, another machine sharing the key, or other usage on the same
+project. Stopping at 90% absorbs that drift.
+
+Other cost discipline:
+
+- Responses are cached for 7 days by default. Reruns do not re-fetch, and cache
+  hits are recorded as non-billable so `prospect quota` shows what the cache
+  saved.
+- `--dry-run` reports the worst-case billable call count without making any
+  calls. Worst case, not exact: paged APIs only reveal how many pages exist by
+  being called.
+- Unrecognized field names resolve to the Enterprise tier rather than
+  optimistically cheap, so a future Google field cannot quietly slip past the
+  ceiling.
+
+### Meta Ad Library — optional, off by default
+
+Whether a business runs ads is the strongest buying signal, but the public
+API's coverage of non-EU commercial ads is unreliable, so nothing is
+architected around it.
+
+The primary path is manual: check the Ad Library web UI for the prospects at
+the top of your list and record the result with `prospect signal`. Hand-entered
+signals live in the same table as automated ones and score identically.
+`prospect brief` tells you which prospects still need that check.
+
+To enable the API source anyway, set `META_ADS_ACCESS_TOKEN` and
+`PROSPECT_ENABLE_META_ADS=true`, then pass `--with-meta-ads` to `enrich`. The
+Ad Library API is not billed per call, but it is rate limited, so a local cap
+still applies to keep a runaway loop from earning a throttle.
+
+## Scoring
+
+Weights live in `weights.yaml` (see `weights.example.yaml`, phase 4), not in
+constants, so they can be tuned as you learn what converts. Starting weights:
+
+| Signal | Points |
+|--------|-------:|
+| Currently running ads | 40 |
+| Contact form present, no automation tags detected | 20 |
+| Stated response time of 24 hours or more | 15 |
+| Hiring for a data-entry or lead-management role | 15 |
+| Size indicators suggesting 2–50 employees | 10 |
+| Public contact email found | 10 |
+| Enterprise indicators (Salesforce, large-company markers) | −25 |
+
+The printed score is **normalized to 0–100** against the sum of positive
+weights in the active config. The raw weighted sum and that maximum are stored
+alongside it, so retuning weights does not silently change what
+`--min-score 60` selects.
+
+Scores are computable from partial data — a business with only website signals
+still scores, marked low-confidence — and a business whose ad status has never
+been recorded is flagged as needing a manual check.
+
+## Crawling rules
+
+Enforced in code, not left to discipline:
+
+- `robots.txt` is honored on every fetch. A disallowed page is skipped and the
+  reason recorded as a signal, so "not fetched" stays distinguishable from
+  "nothing found".
+- The User-Agent names the tool and `PROSPECT_USER_AGENT_EMAIL`, which is
+  required. There is no anonymous fallback.
+- At most one request per second per host, with a timeout on every call and a
+  bounded worker pool (default 5).
+- Contact forms are **detected, never submitted**. Bulk submission is spam.
+- Only publicly listed business contact details are collected.
+- Suppression is enforced by the database: `list`, `export` and `brief` read a
+  view that already filters suppressed businesses, and suppression applies to
+  the domain as well as the row, so a rediscovered business stays excluded.
+
+## Configuration
+
+Every knob is an environment variable, documented in `.env.example`. `.env` is
+loaded for local development and never overrides a real environment variable.
+
+## Layout
+
+```
+cmd/prospect/          entry point
+internal/
+  cli/                 one file per command
+  config/              env + .env loading, validation
+  logging/             slog wiring
+  model/               domain types and the signal vocabulary
+  quota/               SKU tiers, field-mask cost resolution, monthly ceilings
+  store/               SQLite, migrations, repositories
+    migrations/        versioned SQL, applied on startup, idempotent
+  source/              the Source interface every data source implements
+```
