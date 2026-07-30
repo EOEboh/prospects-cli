@@ -10,6 +10,8 @@ import (
 
 	"github.com/EOEboh/prospects-cli/internal/httpx"
 	"github.com/EOEboh/prospects-cli/internal/model"
+	"github.com/EOEboh/prospects-cli/internal/quota"
+	"github.com/EOEboh/prospects-cli/internal/source/metaads"
 	"github.com/EOEboh/prospects-cli/internal/source/website"
 )
 
@@ -66,7 +68,8 @@ that dies at business 34 of 50 picks up at 34.`,
 				return err
 			}
 			if enableMeta && !e.cfg.MetaAdsAvailable() {
-				e.log.Warn("--with-meta-ads ignored: set META_ADS_ACCESS_TOKEN and PROSPECT_ENABLE_META_ADS=true")
+				return fmt.Errorf("--with-meta-ads needs META_ADS_ACCESS_TOKEN and PROSPECT_ENABLE_META_ADS=true;\n" +
+					"leave it off and record ad status by hand instead: prospect signal <id> --type running_ads --value true")
 			}
 			if workers <= 0 {
 				workers = e.cfg.Workers
@@ -77,6 +80,7 @@ that dies at business 34 of 50 picks up at 34.`,
 				workers:    workers,
 				limit:      limit,
 				resume:     resume,
+				metaAds:    enableMeta,
 			})
 		},
 	}
@@ -99,6 +103,7 @@ type enrichOptions struct {
 	workers    int
 	limit      int
 	resume     bool
+	metaAds    bool
 }
 
 type enrichStats struct {
@@ -165,7 +170,24 @@ func runEnrich(cmd *cobra.Command, e *env, opts enrichOptions) error {
 		}
 	}
 
-	stats := enrichWorkerPool(ctx, e, website.New(client, e.log), targets, done, runID, opts.workers)
+	// The Ad Library source is best-effort and additive: it is queried after
+	// the website, and its failures never fail a business.
+	var ads *metaads.Source
+	if opts.metaAds {
+		ads = metaads.New(metaads.Config{
+			Client:    client,
+			Ledger:    quota.NewLedger(e.db, e.cfg.QuotaLimits(), e.log),
+			Token:     e.cfg.MetaAdsToken,
+			Countries: e.cfg.MetaAdsCountries,
+			Logger:    e.log,
+			RunID:     &runID,
+		})
+		e.log.Info("meta ad library enabled",
+			"countries", e.cfg.MetaAdsCountries,
+			"note", "results are name-matched hints; confirm in the web UI")
+	}
+
+	stats := enrichWorkerPool(ctx, e, website.New(client, e.log), ads, targets, done, runID, opts.workers)
 
 	if finishErr := e.db.FinishRun(ctx, runID, stats, ctx.Err()); finishErr != nil {
 		e.log.Error("could not finalise run record", "run_id", runID, "error", finishErr)
@@ -198,6 +220,7 @@ func enrichWorkerPool(
 	ctx context.Context,
 	e *env,
 	src *website.Source,
+	ads *metaads.Source,
 	targets []model.Business,
 	done map[string]bool,
 	runID int64,
@@ -216,7 +239,7 @@ func enrichWorkerPool(
 		go func() {
 			defer wg.Done()
 			for b := range jobs {
-				result := enrichOne(ctx, e, src, b, runID)
+				result := enrichOne(ctx, e, src, ads, b, runID)
 				mu.Lock()
 				stats.Enriched += result.enriched
 				stats.Failed += result.failed
@@ -256,7 +279,7 @@ type enrichResult struct {
 
 // enrichOne processes a single business. An error here is logged against that
 // business and never propagated: one bad site does not fail a run.
-func enrichOne(ctx context.Context, e *env, src *website.Source, b model.Business, runID int64) enrichResult {
+func enrichOne(ctx context.Context, e *env, src *website.Source, ads *metaads.Source, b model.Business, runID int64) enrichResult {
 	key := "business:" + strconv.FormatInt(b.ID, 10)
 
 	signals, err := src.Collect(ctx, &b)
@@ -267,6 +290,19 @@ func enrichOne(ctx context.Context, e *env, src *website.Source, b model.Busines
 			e.log.Error("could not checkpoint failure", "business_id", b.ID, "error", markErr)
 		}
 		return enrichResult{failed: 1}
+	}
+
+	// The Ad Library is queried only after the website succeeded, and its
+	// failures are logged rather than propagated: an optional source with
+	// unreliable coverage must never cost a business its enrichment.
+	if ads != nil && ads.Enabled() {
+		adSignals, adErr := ads.Collect(ctx, &b)
+		if adErr != nil {
+			e.log.Warn("ad library lookup failed; record ad status by hand instead",
+				"business_id", b.ID, "name", b.Name, "error", adErr)
+		} else {
+			signals = append(signals, adSignals...)
+		}
 	}
 
 	transitions, err := e.db.RecordSignals(ctx, signals, &runID)

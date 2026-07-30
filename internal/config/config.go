@@ -57,6 +57,11 @@ type Config struct {
 
 	MetaAdsToken   string
 	MetaAdsEnabled bool
+
+	// MetaAdsCountries is the ad_reached_countries filter the Ad Library API
+	// requires. A business's own country wins when known; this is the fallback
+	// for rows that have none.
+	MetaAdsCountries []string
 }
 
 // Defaults documents every knob in one place. The .env.example file is
@@ -134,6 +139,12 @@ func Load(dotenvPath string) (*Config, error) {
 	fail(err)
 	c.MetaAdsEnabled, err = envBool("PROSPECT_ENABLE_META_ADS", false)
 	fail(err)
+	c.MetaAdsCountries = envList("PROSPECT_META_ADS_COUNTRIES", []string{"US"})
+	for _, code := range c.MetaAdsCountries {
+		if len(code) != 2 {
+			fail(fmt.Errorf("PROSPECT_META_ADS_COUNTRIES: %q is not a two-letter country code", code))
+		}
+	}
 
 	if c.HTTPTimeout <= 0 {
 		fail(errors.New("PROSPECT_HTTP_TIMEOUT must be positive: no unbounded requests"))
@@ -225,6 +236,7 @@ func (c *Config) LogValue() slog.Value {
 		slog.Float64("quota_safety_margin", c.QuotaSafetyMargin),
 		slog.Bool("meta_ads_enabled", c.MetaAdsEnabled),
 		slog.Bool("meta_ads_token_set", c.MetaAdsToken != ""),
+		slog.Any("meta_ads_countries", c.MetaAdsCountries),
 	)
 }
 
@@ -265,6 +277,24 @@ func envBool(key string, def bool) (bool, error) {
 		return def, fmt.Errorf("%s: %q is not a boolean", key, v)
 	}
 	return b, nil
+}
+
+// envList reads a comma-separated list, upper-casing and trimming each entry.
+func envList(key string, def []string) []string {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.ToUpper(strings.TrimSpace(part)); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
 }
 
 func envFloat(key string, def float64) (float64, error) {
