@@ -96,7 +96,11 @@ func (c *Config) Score(in Input) Result {
 	res.Unchecked = c.uncheckedSignals(signals)
 
 	if c.ManualCheckSignal != "" {
-		res.NeedsManualCheck = !signals.has(model.SignalType(c.ManualCheckSignal))
+		// Only a source trusted to settle the question clears the flag. An
+		// enabled-but-unreliable source recording "no ads found" is not the
+		// same as somebody having checked.
+		res.NeedsManualCheck = !signals.hasFromSources(
+			model.SignalType(c.ManualCheckSignal), c.ManualCheckClearedBy)
 	}
 
 	res.Explanation = c.explain(in.Business, res)
@@ -212,6 +216,22 @@ func (s *signalSet) add(sig model.Signal) {
 }
 
 func (s *signalSet) has(t model.SignalType) bool { return len(s.byType[t]) > 0 }
+
+// hasFromSources reports whether any current signal of this type came from one
+// of the named sources. An empty list accepts any source.
+func (s *signalSet) hasFromSources(t model.SignalType, sources []string) bool {
+	if len(sources) == 0 {
+		return s.has(t)
+	}
+	for _, sig := range s.byType[t] {
+		for _, want := range sources {
+			if strings.EqualFold(string(sig.Source), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func (s *signalSet) get(t model.SignalType) []model.Signal { return s.byType[t] }
 

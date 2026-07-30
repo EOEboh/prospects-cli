@@ -21,6 +21,13 @@ func sig(t model.SignalType, value string) model.Signal {
 	return model.Signal{Type: t, Value: value, Source: model.SourceWebsite, Confidence: 1}
 }
 
+// manualSig is a hand-recorded observation. Ad status and hiring status only
+// ever arrive this way, and the source matters: only a trusted source clears
+// the needs-an-ad-check flag.
+func manualSig(t model.SignalType, value string) model.Signal {
+	return model.Signal{Type: t, Value: value, Source: model.SourceManual, Confidence: 1}
+}
+
 func sigWithDetail(t model.SignalType, value, detail string) model.Signal {
 	s := sig(t, value)
 	s.Detail = detail
@@ -51,7 +58,7 @@ func TestScoreIdealProspect(t *testing.T) {
 	res := cfg.Score(Input{
 		Business: model.Business{ID: 1, Name: "Acme Recruiting"},
 		Signals: []model.Signal{
-			sig(model.TypeRunningAds, "true"),
+			manualSig(model.TypeRunningAds, "true"),
 			sig(model.TypeContactForm, "true"),
 			sig(model.TypeChatWidget, "false"),
 			sigWithDetail(model.TypeResponseTimeHours, "24", `{"quote":"We respond within 24 hours."}`),
@@ -248,8 +255,8 @@ func TestConfidenceReflectsCoverage(t *testing.T) {
 			sig(model.TypeContactEmail, "a@b.com"),
 			sig(model.TypeResponseTimeHours, "24"),
 			sig(model.TypeSizeBand, "smb"),
-			sig(model.TypeRunningAds, "true"),
-			sig(model.TypeHiringLeadRole, "false"),
+			manualSig(model.TypeRunningAds, "true"),
+			manualSig(model.TypeHiringLeadRole, "false"),
 		},
 	})
 
@@ -339,7 +346,7 @@ func TestComponentsSortedByImpact(t *testing.T) {
 		Business: model.Business{ID: 1},
 		Signals: []model.Signal{
 			sig(model.TypeContactEmail, "a@b.com"),
-			sig(model.TypeRunningAds, "true"),
+			manualSig(model.TypeRunningAds, "true"),
 			sig(model.TypeContactForm, "true"),
 		},
 	})
@@ -390,11 +397,11 @@ func TestExplanationReadsAsProse(t *testing.T) {
 	res := cfg.Score(Input{
 		Business: model.Business{ID: 1, Name: "Acme Recruiting"},
 		Signals: []model.Signal{
-			sig(model.TypeRunningAds, "true"),
+			manualSig(model.TypeRunningAds, "true"),
 			sig(model.TypeContactForm, "true"),
 			sig(model.TypeContactEmail, "hello@acme.com"),
 			sig(model.TypeSizeBand, "smb"),
-			sig(model.TypeHiringLeadRole, "false"),
+			manualSig(model.TypeHiringLeadRole, "false"),
 			sigWithDetail(model.TypeResponseTimeHours, "24", `{"quote":"We respond within 24 hours."}`),
 		},
 	})
@@ -448,7 +455,7 @@ func TestObservationComesFromTheStrongestRule(t *testing.T) {
 	res := cfg.Score(Input{
 		Business: model.Business{ID: 1, Name: "Acme"},
 		Signals: []model.Signal{
-			sig(model.TypeRunningAds, "true"),
+			manualSig(model.TypeRunningAds, "true"),
 			sig(model.TypeContactForm, "true"),
 		},
 	})
@@ -501,6 +508,74 @@ func TestNeedsManualCheck(t *testing.T) {
 	}
 }
 
+// An enabled-but-unreliable source must not silence the ad-check flag.
+//
+// The Meta Ad Library matches advertisers by page name and its coverage of
+// non-EU commercial ads is incomplete, so "no ads found" from the API is not
+// the same as somebody having looked.
+func TestManualCheckClearedOnlyByTrustedSources(t *testing.T) {
+	cfg := defaultConfig(t)
+
+	apiSaysNo := cfg.Score(Input{
+		Business: model.Business{ID: 1, Name: "Acme"},
+		Signals: []model.Signal{
+			{Type: model.TypeRunningAds, Value: "false", Source: model.SourceMetaAds, Confidence: 0.5},
+		},
+	})
+	if !apiSaysNo.NeedsManualCheck {
+		t.Error("an Ad Library API result must not clear the manual-check flag")
+	}
+
+	// The API finding ads is still not a human confirming it.
+	apiSaysYes := cfg.Score(Input{
+		Business: model.Business{ID: 2, Name: "Acme"},
+		Signals: []model.Signal{
+			{Type: model.TypeRunningAds, Value: "true", Source: model.SourceMetaAds, Confidence: 0.5},
+		},
+	})
+	if !apiSaysYes.NeedsManualCheck {
+		t.Error("an API hit still warrants confirmation in the web UI")
+	}
+	// It should still score, though: a hint is worth acting on.
+	if componentPoints(apiSaysYes)["running_ads"] != 40 {
+		t.Error("an API ad hit should still contribute to the score")
+	}
+
+	// A human settles it.
+	confirmed := cfg.Score(Input{
+		Business: model.Business{ID: 3, Name: "Acme"},
+		Signals: []model.Signal{
+			{Type: model.TypeRunningAds, Value: "false", Source: model.SourceMetaAds, Confidence: 0.5},
+			manualSig(model.TypeRunningAds, "true"),
+		},
+	})
+	if confirmed.NeedsManualCheck {
+		t.Error("a manual record must clear the flag")
+	}
+}
+
+// An operator who decides to trust the API can say so in the config.
+func TestManualCheckClearedByIsConfigurable(t *testing.T) {
+	cfg, err := Parse([]byte(strings.Replace(
+		string(DefaultYAML()),
+		"manual_check_cleared_by:\n  - manual",
+		"manual_check_cleared_by:\n  - manual\n  - meta_ads",
+		1)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	res := cfg.Score(Input{
+		Business: model.Business{ID: 1, Name: "Acme"},
+		Signals: []model.Signal{
+			{Type: model.TypeRunningAds, Value: "false", Source: model.SourceMetaAds, Confidence: 0.5},
+		},
+	})
+	if res.NeedsManualCheck {
+		t.Error("with meta_ads trusted, an API answer should clear the flag")
+	}
+}
+
 // Retuning weights must not silently move what --min-score selects, which is
 // why the score is normalized rather than raw.
 func TestNormalizationSurvivesRetuning(t *testing.T) {
@@ -517,7 +592,7 @@ func TestNormalizationSurvivesRetuning(t *testing.T) {
 	}
 
 	signals := []model.Signal{
-		sig(model.TypeRunningAds, "true"),
+		manualSig(model.TypeRunningAds, "true"),
 		sig(model.TypeContactForm, "true"),
 	}
 	in := Input{Business: model.Business{ID: 1, Name: "Acme"}, Signals: signals}

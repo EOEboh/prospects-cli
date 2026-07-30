@@ -35,6 +35,15 @@ type Config struct {
 	// not been fully assessed. Empty disables the flag.
 	ManualCheckSignal string `yaml:"manual_check_signal"`
 
+	// ManualCheckClearedBy lists the sources whose answer counts as settling
+	// the question. Defaults to manual only.
+	//
+	// This matters because a source can be enabled but unreliable. The Meta Ad
+	// Library matches advertisers by page name and its coverage of non-EU
+	// commercial ads is incomplete, so an API "no ads found" must not be
+	// mistaken for a human having looked.
+	ManualCheckClearedBy []string `yaml:"manual_check_cleared_by"`
+
 	// hash identifies which configuration produced a score, so scores from
 	// before and after a retune stay distinguishable.
 	hash string
@@ -160,6 +169,11 @@ func (c *Config) validate() error {
 	if c.ManualCheckSignal != "" {
 		if _, err := model.LookupSignalType(c.ManualCheckSignal); err != nil {
 			return fmt.Errorf("manual_check_signal: %w", err)
+		}
+		if len(c.ManualCheckClearedBy) == 0 {
+			// Defaulting to every source would let an unreliable one silence
+			// the flag, so the safe default is the one source that is a person.
+			c.ManualCheckClearedBy = []string{string(model.SourceManual)}
 		}
 	}
 	if c.SizeBands.MicroBelow > c.SizeBands.SMBBelow || c.SizeBands.SMBBelow > c.SizeBands.MidBelow {

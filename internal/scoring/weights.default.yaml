@@ -126,3 +126,11 @@ rules:
 # The signal whose absence means a prospect has not been fully assessed.
 # `brief` flags these, since the Ad Library web UI is the reliable way to check.
 manual_check_signal: running_ads
+
+# Which sources count as settling that question. Only a person, by default.
+#
+# The Meta Ad Library API matches advertisers by page name and its coverage of
+# non-EU commercial ads is incomplete, so an API "no ads found" is not the same
+# as somebody having looked. Add meta_ads here if you decide to trust it.
+manual_check_cleared_by:
+  - manual
