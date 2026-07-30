@@ -8,8 +8,8 @@ The score breakdown is the point. A score of 85 with no explanation can't open
 a cold email; every score here carries the plain-English reason it landed
 where it did.
 
-**Status: phase 7 of 8.** Every command is implemented. What remains is a final
-pass on tests and docs.
+**Status: complete.** All eleven commands are implemented, tested and
+documented. The zero-key path needs no account anywhere.
 
 | Phase | Delivers | State |
 |------:|----------|-------|
@@ -20,7 +20,7 @@ pass on tests and docs.
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | done |
 | 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | done |
 | 7 | Meta Ad Library as an optional flag-gated source | done |
-| 8 | Tests, docs, example weights config | pending |
+| 8 | Tests, docs, deployment notes | done |
 
 **The tool is fully useful now**, with no API keys and no billing enabled
 anywhere. Phases 6 and 7 add optional paid discovery; they are an upgrade, not
@@ -513,6 +513,59 @@ Enforced in code, not left to discipline:
 
 Every knob is an environment variable, documented in `.env.example`. `.env` is
 loaded for local development and never overrides a real environment variable.
+
+## Running it on a server
+
+The binary is CGo-free, so it cross-compiles from a laptop and needs no system
+SQLite on the target:
+
+```sh
+GOOS=linux GOARCH=amd64 go build \
+  -ldflags "-X github.com/EOEboh/prospects-cli/internal/config.Version=$(git describe --tags --always)" \
+  -o prospect ./cmd/prospect
+```
+
+Stamping the version matters more than it looks: it goes into the User-Agent
+every site owner sees, so `prospect/v0.3.1 (+mailto:you@example.com)` tells them
+which build was fetching. An unstamped build says `prospect/dev`.
+
+On the box, set real environment variables rather than shipping a `.env` — real
+env wins over the file, so a stale `.env` cannot quietly override them:
+
+```sh
+# /etc/prospect.env, readable only by the user that runs it
+PROSPECT_DB_PATH=/var/lib/prospect/prospect.db
+PROSPECT_CACHE_DB_PATH=/var/lib/prospect/cache.db
+PROSPECT_USER_AGENT_EMAIL=you@example.com
+PROSPECT_LOG_FORMAT=json
+PROSPECT_WEIGHTS_PATH=/etc/prospect/weights.yaml
+```
+
+A morning brief by cron, with JSON logs for the journal and the brief itself
+mailed or written where you will read it:
+
+```cron
+# Enrich anything new, rescore, and leave the brief where you will see it.
+0 7 * * *  set -a; . /etc/prospect.env; set +a; \
+           /usr/local/bin/prospect enrich --all-pending && \
+           /usr/local/bin/prospect score && \
+           /usr/local/bin/prospect brief > /var/lib/prospect/brief.txt
+```
+
+Notes for unattended runs:
+
+- `enrich` is resumable and cached, so a run that dies partway costs nothing to
+  repeat, and a nightly run mostly serves from cache.
+- `PROSPECT_LOG_FORMAT=json` sends structured logs to stderr; the brief goes to
+  stdout, so the two separate cleanly.
+- **Do not put `discover` in cron.** It is the one command that can spend money,
+  and it should be run deliberately with `--dry-run` first.
+- Back up `prospect.db` — it holds every signal, score and outreach note.
+  `cache.db` is disposable; deleting it only forces a refetch.
+
+```sh
+sqlite3 /var/lib/prospect/prospect.db ".backup '/var/backups/prospect-$(date +%F).db'"
+```
 
 ## Layout
 
