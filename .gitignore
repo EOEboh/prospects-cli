@@ -11,6 +11,11 @@ weights.yaml
 
 # build output
 /prospect
+/prospect-linux-amd64
+coverage.out
+
+# `make backup` snapshots
+/backups/
 
 # exports
 *.csv
