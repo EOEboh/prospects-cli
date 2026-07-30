@@ -34,6 +34,15 @@ func notImplemented(cmd string, phase int) error {
 // Execute builds the command tree and runs it. Returns an error rather than
 // exiting so main owns the exit code.
 func Execute(ctx context.Context, version string) error {
+	return newRootCmd(version).ExecuteContext(ctx)
+}
+
+// newRootCmd assembles the command tree.
+//
+// Separate from Execute so tests can drive the real tree — flags, validation,
+// output and all — against a temporary database, rather than testing the
+// command bodies through a side door that production never uses.
+func newRootCmd(version string) *cobra.Command {
 	var (
 		e          env
 		dotenvPath string
@@ -125,7 +134,7 @@ requirement, and stay disabled until their keys are set.`,
 		newQuotaCmd(&e),
 	)
 
-	return root.ExecuteContext(ctx)
+	return root
 }
 
 // overrideEnv lets a flag win over the environment by writing it back before
