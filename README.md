@@ -32,13 +32,83 @@ Requires Go 1.25 or newer (`modernc.org/sqlite` sets the floor). CGo-free, so
 the binary deploys to a fresh VPS with no system SQLite.
 
 ```sh
-git clone <this repo> && cd prospect
-cp .env.example .env      # edit PROSPECT_USER_AGENT_EMAIL
-go build -o prospect ./cmd/prospect
-./prospect --help
+git clone <this repo> && cd prospects-cli
+make setup                # builds, creates .env and weights.yaml
 ```
 
-The database is created and migrated on first run.
+Then edit one value in `.env`:
+
+```
+PROSPECT_USER_AGENT_EMAIL=you@example.com
+```
+
+That goes into the User-Agent every site owner sees, so `enrich` and `discover`
+refuse to start without it. Everything else has a working default. The database
+is created and migrated on first run.
+
+Prefer doing it by hand? `cp .env.example .env && go build -o prospect ./cmd/prospect`
+is the whole of what `make setup` does.
+
+## make
+
+Every action has a target. Run `make` on its own to list them all with
+descriptions — that listing is generated from the Makefile, so it cannot drift.
+
+```
+make                      # list every target
+```
+
+**The one you will run daily:**
+
+```sh
+make morning              # enrich anything new, rescore, print the brief
+```
+
+| | |
+|---|---|
+| **Getting prospects in** | |
+| `make seed CSV=businesses.csv` | Import a CSV |
+| `make seed-dry CSV=businesses.csv` | Preview the import without writing |
+| `make enrich` | Fetch pending websites, extract signals (free) |
+| `make enrich-one ID=42` | Re-fetch one business, ignoring the cache |
+| **Reading the list** | |
+| `make morning` | enrich + score + brief, in one |
+| `make brief` | Top uncontacted prospects with reasoning |
+| `make list MIN=60` | Ranked prospects; also `STATUS=` and `LIMIT=` |
+| `make todo` | Only those needing a manual ad check |
+| `make score` / `make score-why` | Rescore; `-why` prints each breakdown |
+| **Recording what you find** | |
+| `make ads ID=42 VALUE=true` | Record an ad check — the 40-point signal |
+| `make signal ID=42 TYPE=… VALUE=…` | Record any signal; `NOTE=` optional |
+| `make signal-types` | List every signal type you can record |
+| `make status ID=42 SET=emailed_1` | Move a prospect along the pipeline |
+| `make suppress ID=42 REASON="…"` | Permanently exclude a business |
+| **Getting data out** | |
+| `make export OUT=prospects.csv` | CSV, with the reasoning included |
+| `make export-json OUT=p.json` | JSON, with the breakdown structured |
+| **Paid discovery** (needs a key) | |
+| `make discover-dry NICHE="…" LOCATION="…"` | Price a search — **always first** |
+| `make discover NICHE="…" LOCATION="…"` | Spend quota to find businesses |
+| `make quota` | Calls used this month against the ceiling |
+| **Database** | |
+| `make signals ID=42` | Current signals for one business |
+| `make history ID=42` | Full history, including superseded values |
+| `make db` | SQLite shell |
+| `make backup` | Snapshot `prospect.db` into `backups/` |
+| `make cache-clear` | Force a refetch; never touches prospect data |
+| `make reset` | Delete the database (asks for confirmation) |
+| **Development** | |
+| `make check` | Format check, vet and tests — what CI runs |
+| `make test` / `make test-race` / `make cover` | Tests, race detector, coverage |
+| `make build` / `make build-linux` | Local binary / cross-compiled for a server |
+
+Targets that need input say so rather than failing obscurely:
+
+```
+$ make ads ID=42
+error: VALUE is required.
+usage: make ads ID=42 VALUE=true
+```
 
 ## Zero-key quickstart
 
@@ -51,16 +121,20 @@ name,website,city
 Acme Recruiting,https://acmerecruiting.com,Austin
 Bright Path Talent,https://brightpathtalent.com,Austin
 CSV
-./prospect seed --csv businesses.csv --dry-run   # see what it would do
+make seed-dry CSV=businesses.csv     # see what it would do
+make seed     CSV=businesses.csv
+
+# 2. Fetch their sites, score, and read the brief — all three in one.
+make morning
+```
+
+Every `make` target is a thin wrapper over the binary, so the underlying
+commands work identically if you prefer them:
+
+```sh
 ./prospect seed --csv businesses.csv
-
-# 2. Fetch their sites and record what they reveal about lead handling.
 ./prospect enrich --all-pending
-
-# 3. Score from whatever signals exist. Partial data still scores.
 ./prospect score
-
-# 4. Read the morning brief.
 ./prospect brief
 ```
 
@@ -107,7 +181,7 @@ stays gone even if it is still sitting in your spreadsheet.
 ## Daily workflow
 
 ```sh
-./prospect brief                    # the morning read: top 10 uncontacted
+make morning                        # enrich, score, and print the brief
 ```
 
 ```
@@ -148,17 +222,17 @@ The rest of the loop:
 
 ```sh
 # Check the flagged prospects at the Ad Library, record what you find:
-./prospect signal 3 --type running_ads --value true --note "checked ad library"
-./prospect score                    # rescore; 41 → 77 if they are advertising
+make ads ID=3 VALUE=true            # then rescore: 41 → 77 if they advertise
+make score
 
-./prospect status 1 --set emailed_1 --note "sent form observation angle"
-./prospect status 1                 # current status plus the full history
-./prospect list --min-score 60 --status not_contacted
-./prospect export --format csv --min-score 60 --out prospects.csv
-./prospect suppress 2 --reason "asked to be removed"
+make status ID=1 SET=emailed_1 NOTE="sent form observation angle"
+make status ID=1                    # current status plus the full history
+make list MIN=60 STATUS=not_contacted
+make export OUT=prospects.csv MIN=60
+make suppress ID=2 REASON="asked to be removed"
 ```
 
-`prospect signal --help` lists the full signal vocabulary.
+`make signal-types` lists the full signal vocabulary.
 
 ### Outreach tracking
 
