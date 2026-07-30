@@ -8,9 +8,8 @@ The score breakdown is the point. A score of 85 with no explanation can't open
 a cold email; every score here carries the plain-English reason it landed
 where it did.
 
-**Status: phase 1 of 8.** The command surface, configuration, schema and
-migrations are in place. Command bodies land phase by phase and currently exit
-with `not implemented yet (phase N)`.
+**Status: phase 7 of 8.** Every command is implemented. What remains is a final
+pass on tests and docs.
 
 | Phase | Delivers | State |
 |------:|----------|-------|
@@ -20,7 +19,7 @@ with `not implemented yet (phase N)`.
 | 4 | `score` — YAML weights and explanations | done |
 | 5 | `list`, `export`, `status`, `suppress`, `brief` | done |
 | 6 | `discover` — Google Places, field masking, dry-run, quota ceiling | done |
-| 7 | Meta Ad Library as an optional flag-gated source | pending |
+| 7 | Meta Ad Library as an optional flag-gated source | done |
 | 8 | Tests, docs, example weights config | pending |
 
 **The tool is fully useful now**, with no API keys and no billing enabled
@@ -329,19 +328,51 @@ recreated.
 
 ### Meta Ad Library — optional, off by default
 
-Whether a business runs ads is the strongest buying signal, but the public
-API's coverage of non-EU commercial ads is unreliable, so nothing is
-architected around it.
+Whether a business runs ads is the strongest buying signal — 40 of the 110
+available points. But the public API is a weak way to get it, for a specific
+reason: **the archive matches advertisers by page name, not by website.** There
+is no field to tie an ad to a domain, so a hit on "Summit Search" may belong to
+an unrelated firm of the same name, and coverage of non-EU commercial ads is
+incomplete on top of that.
 
-The primary path is manual: check the Ad Library web UI for the prospects at
-the top of your list and record the result with `prospect signal`. Hand-entered
-signals live in the same table as automated ones and score identically.
-`prospect brief` tells you which prospects still need that check.
+So the dependable path is manual. Check the [Ad Library web
+UI](https://www.facebook.com/ads/library/) for the prospects at the top of your
+list and record what you find:
 
-To enable the API source anyway, set `META_ADS_ACCESS_TOKEN` and
-`PROSPECT_ENABLE_META_ADS=true`, then pass `--with-meta-ads` to `enrich`. The
-Ad Library API is not billed per call, but it is rate limited, so a local cap
-still applies to keep a runaway loop from earning a throttle.
+```sh
+./prospect signal 42 --type running_ads --value true --note "checked ad library"
+```
+
+Hand-entered signals live in the same table as automated ones and score
+identically. `prospect brief` tells you exactly who still needs the check and
+prints the command to run.
+
+#### If you enable the API anyway
+
+```sh
+export META_ADS_ACCESS_TOKEN=...          # tokens expire; regenerate as needed
+export PROSPECT_ENABLE_META_ADS=true
+./prospect enrich --all-pending --with-meta-ads
+```
+
+It is deliberately treated as a hint, not a finding:
+
+- Signals are stored at **0.5 confidence**, below the 0.7 floor, so a business
+  known only through the API reads as low-confidence.
+- The signal **does not clear the needs-an-ad-check flag**. An API "no ads
+  found" is not the same as somebody having looked. If you decide to trust it,
+  add `meta_ads` to `manual_check_cleared_by` in `weights.yaml`.
+- Matched page names are recorded in the signal detail so you can judge the
+  match yourself, alongside a note that matching was by name.
+- A failed lookup never fails the business. The website enrichment still lands
+  and the run continues; the error is logged with the manual command to use
+  instead.
+- Both a manual and an API answer can coexist, since signals are scoped by
+  source. Scoring counts the business as advertising if **any** source says so,
+  so a human "yes" is never overridden by an API "no".
+
+The API is free rather than metered, but it is throttled, so a local call cap
+still applies to stop a runaway loop earning a rate limit.
 
 ## Scoring
 
@@ -502,4 +533,5 @@ internal/
     csvseed/           the zero-API path
     website/           signal extraction from a business's own pages
     places/            optional paid discovery, behind the quota ceiling
+    metaads/           optional ad-library hints, off by default
 ```
